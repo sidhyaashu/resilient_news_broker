@@ -55,6 +55,7 @@ async def metrics(buffer: NewsBuffer):
 
 
 async def main():
+    global dedup_count
 
     ingester = NewsIngester(WS_URL, TOKEN)
     deduplicator = NewsDeduplicator(
