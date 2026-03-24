@@ -8,6 +8,13 @@ from apps.news_broker_submission.ingester import NewsIngester
 from apps.news_broker_submission.deduplicator import NewsDeduplicator
 from apps.news_broker_submission.buffer import NewsBuffer
 from apps.news_broker_submission.db import MongoDB
+from apps.news_broker_submission.config import (
+    WS_URL,
+    TOKEN,
+    BUFFER_CAPACITY,
+    DEDUP_THRESHOLD,
+    WINDOW_SIZE,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -48,12 +55,13 @@ async def metrics(buffer: NewsBuffer):
 
 
 async def main():
-    WS_URL = "ws://localhost:8888/ws"
-    TOKEN = "test-session-chaos"
 
     ingester = NewsIngester(WS_URL, TOKEN)
-    deduplicator = NewsDeduplicator()
-    buffer = NewsBuffer()
+    deduplicator = NewsDeduplicator(
+        threshold=DEDUP_THRESHOLD,
+        window_size=WINDOW_SIZE
+    )
+    buffer = NewsBuffer(capacity=BUFFER_CAPACITY)
     db = MongoDB()
 
     # background workers
