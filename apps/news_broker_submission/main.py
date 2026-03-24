@@ -3,11 +3,11 @@ import json
 import logging
 from pydantic import ValidationError
 
-from models import NewsItem
-from ingester import NewsIngester
-from deduplicator import NewsDeduplicator
-from buffer import NewsBuffer
-from db import MongoDB
+from apps.news_broker_submission.models import NewsItem
+from apps.news_broker_submission.ingester import NewsIngester
+from apps.news_broker_submission.deduplicator import NewsDeduplicator
+from apps.news_broker_submission.buffer import NewsBuffer
+from apps.news_broker_submission.db import MongoDB
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,15 +22,18 @@ async def db_worker(buffer: NewsBuffer, db: MongoDB):
     while True:
         item = await buffer.pop()
 
-        if item:
-            try:
-                await db.insert(item)
-                stored_count += 1
-            except Exception as e:
-                # DB failed → push back
-                await buffer.push(item)
-                logger.warning(f"DB error, retrying: {e}")
-                await asyncio.sleep(2)
+        if not item:
+            await asyncio.sleep(0.1)
+            continue
+
+        try:
+            await db.insert(item)
+            stored_count += 1
+
+        except Exception as e:
+            await buffer.push(item)
+            logger.warning(f"DB error, retrying: {e}")
+            await asyncio.sleep(2)
 
 
 async def metrics(buffer: NewsBuffer):
