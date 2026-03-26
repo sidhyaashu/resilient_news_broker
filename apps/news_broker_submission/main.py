@@ -8,6 +8,7 @@ from apps.news_broker_submission.ingester import NewsIngester
 from apps.news_broker_submission.deduplicator import NewsDeduplicator
 from apps.news_broker_submission.buffer import NewsBuffer
 from apps.news_broker_submission.db import MongoDB
+from apps.news_broker_submission.metrics import Metrics
 from apps.news_broker_submission.config import (
     WS_URL,
     TOKEN,
@@ -19,13 +20,10 @@ from apps.news_broker_submission.config import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-stored_count = 0
-dedup_count = 0
+MAX_RETRIES = 5
 
 
-async def db_worker(buffer: NewsBuffer, db: MongoDB):
-    global stored_count
-
+async def db_worker(buffer: NewsBuffer, db: MongoDB, metrics: Metrics):
     while True:
         item = await buffer.pop()
 
@@ -35,57 +33,71 @@ async def db_worker(buffer: NewsBuffer, db: MongoDB):
 
         try:
             await db.insert(item)
-            stored_count += 1
+            await metrics.inc_stored()
 
         except Exception as e:
+            item.retry_count += 1
+
+            if item.retry_count > MAX_RETRIES:
+                logger.error(f"Dropped after retries: {item.headline}")
+                continue
+
             await buffer.push(item)
-            logger.warning(f"DB error, retrying: {e}")
-            await asyncio.sleep(2)
+
+            logger.warning(
+                f"DB retry {item.retry_count} for '{item.headline}': {e}"
+            )
+
+            await asyncio.sleep(min(2 ** item.retry_count, 30))
 
 
-async def metrics(buffer: NewsBuffer):
-    global stored_count, dedup_count
-
+async def metrics_reporter(buffer: NewsBuffer, metrics: Metrics):
     while True:
         await asyncio.sleep(60)
+
+        stored, dedup = await metrics.snapshot()
+
         logger.info(
-            f"--- METRICS --- Stored: {stored_count} | "
-            f"Deduplicated: {dedup_count} | {buffer.stats()}"
+            f"--- METRICS --- Stored: {stored} | "
+            f"Deduplicated: {dedup} | {buffer.stats()}"
         )
 
 
 async def main():
-    global dedup_count
-
     ingester = NewsIngester(WS_URL, TOKEN)
+
     deduplicator = NewsDeduplicator(
         threshold=DEDUP_THRESHOLD,
         window_size=WINDOW_SIZE
     )
+
     buffer = NewsBuffer(capacity=BUFFER_CAPACITY)
     db = MongoDB()
+    metrics = Metrics()
 
-    # background workers
-    asyncio.create_task(db_worker(buffer, db))
-    asyncio.create_task(metrics(buffer))
+    asyncio.create_task(db_worker(buffer, db, metrics))
+    asyncio.create_task(metrics_reporter(buffer, metrics))
 
     logger.info("Starting Resilient News Broker...")
 
     async for raw_msg in ingester.connect():
         try:
             data = json.loads(raw_msg)
+
             item = NewsItem(**data)
 
             if deduplicator.is_duplicate(item.headline):
-                dedup_count += 1
+                await metrics.inc_dedup()
                 continue
 
             await buffer.push(item)
 
         except json.JSONDecodeError:
             logger.warning(f"Malformed JSON ignored: {raw_msg[:50]}")
+
         except ValidationError as e:
             logger.warning(f"Validation failed: {e}")
+
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
 

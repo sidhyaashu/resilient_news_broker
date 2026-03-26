@@ -3,6 +3,7 @@
 Welcome to the InvestCode Backend Engineering Challenge.
 
 ## Context
+
 InvestCode relies on consistent, clean, and real-time data. Our primary news feed is a firehose: it is bursty, redundant, and occasionally the connection drops. 
 
 Your task is to build a **"Resilient News Broker"** that connects to our internal mock source, cleans/deduplicates the data, and ensures it reaches our database without loss—even during simulated outages.

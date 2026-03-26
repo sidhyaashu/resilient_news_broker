@@ -5,6 +5,7 @@ class NewsItem(BaseModel):
     headline: str = Field(..., description="The news headline")
     priority: int = Field(..., description="Priority level: 1 (High), 2 (Medium), 3 (Low)")
     timestamp: datetime = Field(default_factory=datetime.utcnow, description="Time of emission")
+    retry_count: int = 0 
 
     @validator('priority')
     def validate_priority(cls, v):

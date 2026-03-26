@@ -178,8 +178,7 @@ python infrastructure/scripts/assignment_source_server.py
 ### 3. Run the broker
 
 ```id="oz1k92"
-export PYTHONPATH=$PYTHONPATH:.
-python apps/news_broker_submission/main.py
+python -m apps.news_broker_submission.main
 ```
 
 ---

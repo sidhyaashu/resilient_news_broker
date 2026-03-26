@@ -14,8 +14,9 @@ class NewsBuffer:
     async def push(self, item: NewsItem):
         async with self.lock:
             if len(self.buffer) >= self.capacity:
-                self.buffer.sort(key=lambda x: (x.priority, x.timestamp))
-                dropped = self.buffer.pop(-1)
+                self.buffer.sort(key=lambda x: (-x.priority, x.timestamp))
+
+                dropped = self.buffer.pop(0)
 
                 logger.warning(
                     f"Dropped item: {dropped.headline} [P{dropped.priority}]"
