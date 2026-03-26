@@ -23,6 +23,7 @@ class NewsBuffer:
                 )
 
             self.buffer.append(item)
+            logger.debug(f"Buffered: {item.headline} [P{item.priority}]")
 
     async def pop(self) -> Optional[NewsItem]:
         async with self.lock:

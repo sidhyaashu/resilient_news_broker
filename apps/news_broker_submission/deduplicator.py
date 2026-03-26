@@ -37,6 +37,7 @@ class NewsDeduplicator:
         max_score = max(scores)
 
         if max_score >= self.threshold:
+            logger.debug(f"Duplicate detected: {candidate_headline}")
             return True
 
         self.history.append(candidate_headline)

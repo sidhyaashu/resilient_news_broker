@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import random
 from pydantic import ValidationError
 
 from apps.news_broker_submission.models import NewsItem
@@ -17,7 +18,14 @@ from apps.news_broker_submission.config import (
     WINDOW_SIZE,
 )
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+)
+logging.getLogger("websockets").setLevel(logging.WARNING)
+logging.getLogger("pymongo").setLevel(logging.WARNING)
+
+
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 5
@@ -32,13 +40,14 @@ async def db_worker(buffer: NewsBuffer, db: MongoDB, metrics: Metrics):
             continue
 
         try:
-            await db.insert(item)
+            await db.insert(item.model_dump(exclude={"retry_count"}))
             await metrics.inc_stored()
+            logger.debug(f"Stored: {item.headline}")
 
         except Exception as e:
             item.retry_count += 1
 
-            if item.retry_count > MAX_RETRIES:
+            if item.retry_count >= MAX_RETRIES:
                 logger.error(f"Dropped after retries: {item.headline}")
                 continue
 
@@ -48,7 +57,7 @@ async def db_worker(buffer: NewsBuffer, db: MongoDB, metrics: Metrics):
                 f"DB retry {item.retry_count} for '{item.headline}': {e}"
             )
 
-            await asyncio.sleep(min(2 ** item.retry_count, 30))
+            await asyncio.sleep(min(2 ** item.retry_count, 30) + random.uniform(0, 0.5))
 
 
 async def metrics_reporter(buffer: NewsBuffer, metrics: Metrics):
@@ -62,7 +71,6 @@ async def metrics_reporter(buffer: NewsBuffer, metrics: Metrics):
             f"Deduplicated: {dedup} | {buffer.stats()}"
         )
 
-
 async def main():
     ingester = NewsIngester(WS_URL, TOKEN)
 
@@ -75,32 +83,46 @@ async def main():
     db = MongoDB()
     metrics = Metrics()
 
-    asyncio.create_task(db_worker(buffer, db, metrics))
-    asyncio.create_task(metrics_reporter(buffer, metrics))
+    tasks = [
+        asyncio.create_task(db_worker(buffer, db, metrics)),
+        asyncio.create_task(metrics_reporter(buffer, metrics))
+    ]
 
     logger.info("Starting Resilient News Broker...")
 
-    async for raw_msg in ingester.connect():
-        try:
-            data = json.loads(raw_msg)
+    try:
+        async for raw_msg in ingester.connect():
+            try:
+                data = json.loads(raw_msg)
+                item = NewsItem(**data)
 
-            item = NewsItem(**data)
+                if deduplicator.is_duplicate(item.headline):
+                    await metrics.inc_dedup()
+                    continue
 
-            if deduplicator.is_duplicate(item.headline):
-                await metrics.inc_dedup()
-                continue
+                await buffer.push(item)
 
-            await buffer.push(item)
+            except json.JSONDecodeError:
+                logger.warning(f"Malformed JSON ignored: {raw_msg[:50]}")
 
-        except json.JSONDecodeError:
-            logger.warning(f"Malformed JSON ignored: {raw_msg[:50]}")
+            except ValidationError as e:
+                logger.warning(f"Validation failed: {e}")
 
-        except ValidationError as e:
-            logger.warning(f"Validation failed: {e}")
+            except Exception as e:
+                logger.error(f"Unexpected error: {e}")
 
-        except Exception as e:
-            logger.error(f"Unexpected error: {e}")
+    except asyncio.CancelledError:
+        logger.info("Shutting down gracefully...")
 
+    finally:
+        logger.info("Cancelling background tasks...")
+
+        for task in tasks:
+            task.cancel()
+
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        logger.info("Shutdown complete.")
 
 if __name__ == "__main__":
     asyncio.run(main())
